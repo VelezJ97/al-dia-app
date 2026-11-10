@@ -1,7 +1,7 @@
-// Service worker de Al Día. scripts/build.js sustituye 7d127525ea12 (todas las apariciones, con /g: la lección del riesgo
+// Service worker de Al Día. scripts/build.js sustituye 0c2a67cc2df1 (todas las apariciones, con /g: la lección del riesgo
 // #10 de MusclUp) por el hash de la app, así cada versión nueva invalida la caché anterior.
 "use strict";
-const VERSION = "7d127525ea12";
+const VERSION = "0c2a67cc2df1";
 const SHELL = "aldia-shell-" + VERSION;
 const FONTS = "aldia-fonts-v1";
 const FILES = ["./", "index.html", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png"];

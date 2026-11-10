@@ -179,6 +179,8 @@ nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;background:var(--bg);
 .cq:first-of-type{border-top:0}
 .cq-top{display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap}
 .cq-dif{display:block;margin-top:4px;min-height:18px}
+.cq-h{margin:20px 0 6px}
+.cq-p{margin:0 0 4px}
 .acerca{font-size:13px;color:var(--mu)}
 @media (min-width:700px){body{padding-bottom:110px}}
 </style>
@@ -468,15 +470,24 @@ function aplicarMov(F) {
   return { mov, antes: null };
 }
 // Cuadre: compara el saldo real con el de la app y crea un ajuste a la vista por la diferencia.
-function cuadrar(reales) {
+// Las deudas se cuadran con lo que el banco dice que debes (saldo pendiente, en positivo). Al Día resta cada cuota
+// completa y el banco solo el capital: si el banco dice más, la diferencia son intereses y seguros (un gasto
+// «Intereses y comisiones» cargado a la deuda); si dice menos, queda un ajuste a la vista.
+function cuadrar(reales, deudas) {
   const h = hoy(), S = saldos(), creados = [], cuadresAntes = clon(DB.aj.cuadres), t = ahora().getTime();
-  for (const id of Object.keys(reales)) {
+  const nuevo = (o) => { const m = Object.assign({ id: nid("a"), fecha: h, desde: null, hacia: null, fijo: null, origen: null, creado: t, editado: t, borrado: false }, o); DB.movs.push(m); creados.push(m); };
+  for (const id of Object.keys(reales || {})) {
     if (!cuenta(id) || !Number.isFinite(reales[id])) continue;
     const dif = reales[id] - S[id];
-    if (dif !== 0) {
-      const m = { id: nid("a"), fecha: h, tipo: "ajuste", valor: Math.abs(dif), desde: dif < 0 ? id : null, hacia: dif > 0 ? id : null, cat: CAT_AJUSTE, fijo: null, nota: "Cuadre con el saldo real (" + fmt(reales[id]) + ")", origen: null, creado: t, editado: t, borrado: false };
-      DB.movs.push(m); creados.push(m);
-    }
+    if (dif !== 0) nuevo({ tipo: "ajuste", valor: Math.abs(dif), desde: dif < 0 ? id : null, hacia: dif > 0 ? id : null, cat: CAT_AJUSTE, nota: "Cuadre con el saldo real (" + fmt(reales[id]) + ")" });
+    DB.aj.cuadres[id] = h;
+  }
+  for (const id of Object.keys(deudas || {})) {
+    const c = cuenta(id), debe = deudas[id];
+    if (!c || c.clase !== "debo" || !Number.isFinite(debe) || debe < 0) continue;
+    const dif = -debe - S[id];
+    if (dif < 0) nuevo({ tipo: "gasto", valor: -dif, desde: id, cat: CAT_INTERES, nota: "Intereses y seguros: cuadre con el saldo del banco (" + fmt(debe) + ")" });
+    else if (dif > 0) nuevo({ tipo: "ajuste", valor: dif, hacia: id, cat: CAT_AJUSTE, nota: "Cuadre con el saldo del banco (" + fmt(debe) + ")" });
     DB.aj.cuadres[id] = h;
   }
   return { creados, cuadresAntes };
@@ -857,10 +868,14 @@ function borrarRegistro() {
 
 /* ---------- Cuadrar ---------- */
 function abrirCuadre() {
-  const S = saldos(), l = activas("tengo");
-  if (!l.length) { toast("Primero agrega tus cuentas en Ajustes."); return; }
-  let h = "<p>Abre la app de tu banco y mira lo que tienes en la mano. Escribe el saldo real de hoy; si una cuenta está en negativo, empieza con el signo menos (−). Al Día registra la diferencia como «Ajuste de cuadre», a la vista.</p>";
+  const S = saldos(), l = activas("tengo"), ds = activas("debo");
+  if (!l.length && !ds.length) { toast("Primero agrega tus cuentas en Ajustes."); return; }
+  let h = "<p>Abre la app de tu banco y mira lo que tienes en la mano. Escribe el saldo real de hoy; si una cuenta está en negativo, empieza con el signo menos (−). Al Día registra la diferencia como «Ajuste de cuadre», a la vista. Lo que dejes en blanco no se toca.</p>";
   h += l.map((c) => '<div class="cq"><div class="cq-top"><b>' + esc(c.nombre) + "</b><small>Al Día dice " + mon(S[c.id]) + '</small></div><div class="monto sm"><span>$</span><input data-cq="' + c.id + '" inputmode="text" autocomplete="off" placeholder="Saldo real de hoy" aria-label="Saldo real de ' + esc(c.nombre) + '"></div><small class="cq-dif" id="cqd-' + c.id + '"></small></div>').join("");
+  if (ds.length) {
+    h += '<h3 class="cq-h">Tus deudas</h3><p class="mu cq-p">Una vez al mes, después de pagar las cuotas, escribe lo que el banco dice que debes hoy (saldo pendiente). Al Día resta cada cuota completa, pero el banco solo baja el capital: lo que debas de más son intereses y seguros, y queda en «Intereses y comisiones».</p>';
+    h += ds.map((c) => '<div class="cq"><div class="cq-top"><b>' + esc(c.nombre) + "</b><small>Al Día dice que debes " + mon(-S[c.id]) + '</small></div><div class="monto sm"><span>$</span><input data-cqd="' + c.id + '" inputmode="decimal" autocomplete="off" placeholder="Saldo pendiente en el banco" aria-label="Saldo pendiente de ' + esc(c.nombre) + '"></div><small class="cq-dif" id="cqdd-' + c.id + '"></small></div>').join("");
+  }
   h += '<p class="msg" id="cq-msg" hidden></p><div class="btns"><button class="bt full" data-act="cq-guardar">Cuadrar</button></div>';
   abrirSheet("Cuadrar con el banco", h);
 }
@@ -872,16 +887,28 @@ function difCuadre(input) {
   const d = real - saldo(id);
   out.innerHTML = d === 0 ? "Igual: no hay diferencia." : "Diferencia: " + mon(d, d > 0 ? "pos" : "neg").replace(fmt(d), fmt(d, true)) + (d > 0 ? " · entró algo que no se registró" : " · salió algo que no se registró");
 }
+function difDeuda(input) {
+  const id = input.dataset.cqd, debe = leerReal(input), out = $("#cqdd-" + id);
+  if (debe == null) { out.textContent = ""; return; }
+  if (!Number.isFinite(debe) || debe < 0) { out.textContent = "Escribe solo el número, sin signo."; return; }
+  const d = debe + saldo(id); // > 0: el banco dice que debes más que Al Día
+  out.innerHTML = d === 0 ? "Igual: no hay diferencia." : d > 0 ? "Debes " + mon(d, "neg") + " más · intereses y seguros" : "Debes " + mon(-d, "pos") + " menos · queda como ajuste";
+}
 function guardarCuadre() {
-  const reales = {}; let malos = 0;
+  const reales = {}, deudas = {}; let malos = 0;
   $$("[data-cq]").forEach((i) => { const r = leerReal(i); if (r == null) return; if (!Number.isFinite(r)) malos++; else reales[i.dataset.cq] = r; });
+  $$("[data-cqd]").forEach((i) => { const r = leerReal(i); if (r == null) return; if (!Number.isFinite(r) || r < 0) malos++; else deudas[i.dataset.cqd] = r; });
   const p = $("#cq-msg");
   if (malos) { p.hidden = false; p.className = "msg err"; p.textContent = "Revisa los montos: escribe solo números."; return; }
-  if (!Object.keys(reales).length) { p.hidden = false; p.className = "msg err"; p.textContent = "Escribe el saldo real de al menos una cuenta."; return; }
-  const r = cuadrar(reales);
+  if (!Object.keys(reales).length && !Object.keys(deudas).length) { p.hidden = false; p.className = "msg err"; p.textContent = "Escribe el saldo real de al menos una cuenta o deuda."; return; }
+  const r = cuadrar(reales, deudas);
   guardarDB("movs", "aj"); cerrarSheet(); render();
-  const n = Object.keys(reales).length;
-  toast((n === 1 ? "1 cuenta cuadrada" : n + " cuentas cuadradas") + (r.creados.length ? " · " + r.creados.length + (r.creados.length === 1 ? " ajuste" : " ajustes") : " · sin diferencias"), () => {
+  const n = Object.keys(reales).length, m = Object.keys(deudas).length, partes = [];
+  if (n) partes.push(n === 1 ? "1 cuenta" : n + " cuentas");
+  if (m) partes.push(m === 1 ? "1 deuda" : m + " deudas");
+  const nA = r.creados.filter((x) => x.tipo === "ajuste").length, nI = r.creados.length - nA;
+  const detalle = r.creados.length ? (nA ? " · " + nA + (nA === 1 ? " ajuste" : " ajustes") : "") + (nI ? " · intereses en " + nI + (nI === 1 ? " deuda" : " deudas") : "") : " · sin diferencias";
+  toast(partes.join(" y ") + (n + m === 1 ? " cuadrada" : " cuadradas") + detalle, () => {
     const ids = new Set(r.creados.map((m) => m.id)); DB.movs = DB.movs.filter((m) => !ids.has(m.id)); DB.aj.cuadres = r.cuadresAntes; guardarDB("movs", "aj"); render(); toast("Deshecho");
   });
 }
@@ -1024,10 +1051,10 @@ function pedirPersistencia() {
 
 /* ---------- Ayuda: «¿Cómo funciona?» ---------- */
 const AYUDA = {
-  inicio: ["Inicio", "<h3>Lo que tienes</h3><p>La suma de tus cuentas (banco, billetera, efectivo) según lo que registras. Toca una cuenta para ver solo sus movimientos.</p><h3>Debes y te deben</h3><p>El total de tus deudas y de lo que te deben. Los detalles están en Deudas.</p><h3>Próximos 7 días</h3><p>Los gastos fijos y las cuotas que vencen pronto, y lo vencido de este mes. «Pagar» o «Abonar» te deja el movimiento listo: solo revisas y guardas.</p><h3>Cuadrar con el banco</h3><p>Una vez por semana, escribe el saldo real de tu banco, tu billetera y tu efectivo. Si no coincide, Al Día registra la diferencia como «Ajuste de cuadre», a la vista, para que nada quede escondido.</p><h3>Avisos</h3><p>Salen arriba al abrir la app: pagos vencidos, respaldo pendiente y cuadre. «Ocultar hoy» los guarda hasta mañana. La app no manda notificaciones.</p>"],
+  inicio: ["Inicio", "<h3>Lo que tienes</h3><p>La suma de tus cuentas (banco, billetera, efectivo) según lo que registras. Toca una cuenta para ver solo sus movimientos.</p><h3>Debes y te deben</h3><p>El total de tus deudas y de lo que te deben. Los detalles están en Deudas.</p><h3>Próximos 7 días</h3><p>Los gastos fijos y las cuotas que vencen pronto, y lo vencido de este mes. «Pagar» o «Abonar» te deja el movimiento listo: solo revisas y guardas.</p><h3>Cuadrar con el banco</h3><p>Una vez por semana, escribe el saldo real de tu banco, tu billetera y tu efectivo. Si no coincide, Al Día registra la diferencia como «Ajuste de cuadre», a la vista, para que nada quede escondido. Una vez al mes, cuadra también tus créditos y tarjetas con lo que el banco dice que debes.</p><h3>Avisos</h3><p>Salen arriba al abrir la app: pagos vencidos, respaldo pendiente y cuadre. «Ocultar hoy» los guarda hasta mañana. La app no manda notificaciones.</p>"],
   movs: ["Movimientos", "<p>Todo lo que registras, por mes y por día. El mes más reciente sale abierto; toca otro para abrirlo.</p><h3>Buscar y filtrar</h3><p>Busca por descripción, categoría, cuenta o monto. Filtra por cuenta (para ver lo que entró y salió de ella) o por tipo.</p><h3>Corregir o borrar</h3><p>Toca un movimiento para cambiarlo o borrarlo. Siempre puedes deshacer justo después.</p><h3>Tipos</h3><ul><li><b>Gasto</b>: sale plata de una cuenta o de tu tarjeta.</li><li><b>Ingreso</b>: entra plata a una cuenta.</li><li><b>Pago o traslado</b>: pasa plata de una cuenta a otra: abonar a una deuda, sacar efectivo, prestar o recibir un desembolso.</li><li><b>Ajuste de cuadre</b>: la diferencia con tu banco al cuadrar.</li></ul>"],
   pagos: ["Pagos del mes", "<p>Tus gastos fijos y las cuotas de tus deudas en el mes, con su estado: pagado, parcial, pendiente, vence hoy, vencido o sin día de pago.</p><h3>¿Cómo sabe que pagaste?</h3><p>Un gasto fijo cuenta como pagado cuando registras un gasto en «Gastos fijos» y eliges cuál. Una deuda, cuando registras un abono hacia ella ese mes. Si pagaste menos que el monto, sale como parcial.</p><h3>Pagar</h3><p>«Pagar» o «Abonar» abre el registro con todo listo; revisa el monto y guarda.</p><h3>Sin día de pago</h3><p>Ponle el día y la cuota en Ajustes › Cuentas (deudas) o Ajustes › Gastos fijos para que te avise a tiempo.</p>"],
-  deudas: ["Deudas", "<p>Cuánto debes en cada deuda, cuánto llevas pagado y cuánto te falta. La barra es lo pagado frente a todo lo que la deuda ha crecido (desembolsos, compras con la tarjeta e intereses).</p><h3>Abonar</h3><p>Registra el pago: sale de tu banco y va a la deuda. Cuando llega a cero, la deuda pasa a «Saldadas» con su historia.</p><h3>Tarjeta de crédito</h3><p>Si compras con la tarjeta, registra un gasto y en «Pagaste con» elige la tarjeta: la deuda sube sola. Los intereses y la cuota de manejo van como gasto en «Intereses y comisiones», pagados con la tarjeta.</p><h3>Te deben</h3><p>Cuando prestas plata, regístralo como «Pago o traslado» desde tu banco hacia la persona. Cuando te devuelve, al revés.</p>"],
+  deudas: ["Deudas", "<p>Cuánto debes en cada deuda, cuánto llevas pagado y cuánto te falta. La barra es lo pagado frente a todo lo que la deuda ha crecido (desembolsos, compras con la tarjeta e intereses).</p><h3>Abonar</h3><p>Registra el pago: sale de tu banco y va a la deuda. Cuando llega a cero, la deuda pasa a «Saldadas» con su historia.</p><h3>Tarjeta de crédito</h3><p>Si compras con la tarjeta, registra un gasto y en «Pagaste con» elige la tarjeta: la deuda sube sola. Los intereses y la cuota de manejo van como gasto en «Intereses y comisiones», pagados con la tarjeta.</p><h3>Cuadrar tus deudas</h3><p>Al Día resta cada cuota completa, pero el banco solo baja el capital: el resto son intereses y seguros. Una vez al mes, después de pagar, ve a Inicio › Cuadrar con el banco y escribe el saldo pendiente de cada crédito o tarjeta. Lo que debas de más queda como gasto en «Intereses y comisiones».</p><h3>Te deben</h3><p>Cuando prestas plata, regístralo como «Pago o traslado» desde tu banco hacia la persona. Cuando te devuelve, al revés.</p>"],
   ajustes: ["Ajustes", "<h3>Cuentas</h3><p>Tus bancos, billeteras y efectivo (lo que tienes), tus tarjetas y créditos (lo que debes) y las personas que te deben. A las deudas ponles cuota y día de pago para que salgan en Pagos del mes.</p><h3>Gastos fijos</h3><p>Arriendo, recibos, internet… con su monto y su día.</p><h3>Respaldo</h3><p>Tus datos viven solo en este celular. «Compartir respaldo» te deja guardar una copia en tu Drive, tu correo o un chat contigo mismo. Para recuperarlos, «Restaurar desde un archivo».</p><h3>Privacidad</h3><p>El ojo de arriba oculta los montos, para abrir la app en público.</p>"],
 };
 function abrirAyuda(tab) { const a = AYUDA[tab] || AYUDA.inicio; abrirSheet("¿Cómo funciona? · " + a[0], '<div class="ayuda">' + a[1] + '</div><div class="btns"><button class="bt full ghost" data-act="recorrido">Ver el recorrido completo</button></div>'); }
@@ -1165,6 +1192,7 @@ function iniciar() {
     const t = e.target;
     if (t.id === "rg-valor" || t.id === "ce-saldo" || t.id === "ce-cuota" || t.id === "fe-monto") { t.value = formatoVivo(t.value); if (t.id === "rg-valor" && F) { F.confirmado = false; msgForm(""); $("#rg-guardar").textContent = "Guardar"; } }
     else if (t.dataset && t.dataset.cq) { const neg = /^\s*[-−]/.test(t.value); t.value = (neg ? "−" : "") + formatoVivo(t.value); difCuadre(t); }
+    else if (t.dataset && t.dataset.cqd) { t.value = formatoVivo(t.value); difDeuda(t); }
     else if (t.id === "mv-buscar") { UI.buscar = t.value; UI.abiertos = {}; pintarListaMovs(); }
   });
   document.addEventListener("change", (e) => {
