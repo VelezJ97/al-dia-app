@@ -492,6 +492,17 @@ function cuadrar(reales, deudas) {
   }
   return { creados, cuadresAntes };
 }
+// Deudas con el banco que toca cuadrar (riesgo 9, 2026-11-10): tienen un abono (cuota pagada) posterior a su último
+// cuadre, o nunca se han cuadrado. Se piden desde el día siguiente al abono, para dar tiempo a que el banco lo refleje.
+// Las deudas con personas no tienen saldo de banco y no se piden.
+function deudasPorCuadrar() {
+  const h = hoy(), S = saldos(), ms = vivos();
+  return activas("debo").filter((c) => {
+    if (c.tipo === "persona" || !(S[c.id] < 0)) return false;
+    const f = DB.aj.cuadres[c.id];
+    return ms.some((m) => m.tipo === "traslado" && m.hacia === c.id && m.fecha < h && (!f || m.fecha > f));
+  });
+}
 
 /* ---------- Respaldo ---------- */
 function respaldoObj() { return { app: "aldia", v: 1, tipo: "respaldo", creado: ahora().toISOString(), cuentas: DB.cuentas, movs: DB.movs, fijos: DB.fijos, cats: DB.cats, plantillas: DB.plantillas, aj: DB.aj }; }
@@ -570,6 +581,12 @@ function avisos() {
   if (n && (!ult || !esFecha(ult.fecha) || (difDias(ult.fecha, h) >= 7 && DB.movs.some((m) => m.editado > (ult.ts || 0))))) out.push({ id: "respaldo", nivel: "warn", texto: ult && esFecha(ult.fecha) ? "Tu último respaldo fue hace " + difDias(ult.fecha, h) + " días. Tus datos viven solo en este celular." : "Aún no tienes un respaldo. Tus datos viven solo en este celular: guarda una copia en tu Drive o tu correo.", accion: "Hacer respaldo", act: "respaldo-compartir" });
   const tengo = activas("tengo"), viejas = tengo.filter((c) => { const f = DB.aj.cuadres[c.id]; return !f || difDias(f, h) >= 14; });
   if (n && viejas.length) out.push({ id: "cuadre", nivel: "info", texto: viejas.length === tengo.length && !Object.keys(DB.aj.cuadres).length ? "Cuadra tus cuentas con lo que dice tu banco para que todos los números sean reales." : "Hace más de 2 semanas no cuadras " + viejas.map((c) => c.nombre).join(", ") + ".", accion: "Cuadrar", act: "cuadrar" });
+  const dq = n ? deudasPorCuadrar() : [];
+  if (dq.length) {
+    const nom = dq.map((c) => c.nombre), uno = dq.length === 1;
+    const cuales = uno ? "una cuota de " + nom[0] : dq.length <= 3 ? "cuotas de " + nom.slice(0, -1).join(", ") + " y " + nom[nom.length - 1] : "cuotas de " + dq.length + " deudas";
+    out.push({ id: "cuadre-deudas", nivel: "info", texto: "Pagaste " + cuales + " y aún no " + (uno ? "cuadras esa deuda" : "las cuadras") + " con el banco. Escribe su saldo pendiente para que queden los intereses y Al Día siga igual al banco.", accion: "Cuadrar", act: "cuadrar" });
+  }
   const oc = store.get(K.avisos, {});
   return out.filter((a) => !(oc && oc.fecha === h && Array.isArray(oc.ids) && oc.ids.includes(a.id)));
 }
